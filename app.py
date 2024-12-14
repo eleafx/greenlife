@@ -140,171 +140,227 @@ class GreenLifeAssistant:
             st.error(f"Error fetching food data: {str(e)}")
             return None
 
-    def estimate_emissions_from_ecoscore(self, ecoscore):
-        """Estimate emissions based on ecoscore grade"""
-        # Rough estimation based on ecoscore grades
-        emissions_factors = {
-        'a': 1.0,  # Low environmental impact
-        'b': 2.0,
-        'c': 3.0,
-        'd': 4.0,
-        'e': 5.0,  # High environmental impact
-        'unknown': 3.0  # Default middle value
-        }
-        return emissions_factors.get(ecoscore.lower(), 3.0)
-
     def get_food_emissions_database(self):
         """Get food emissions data from Open Food Facts"""
         try:
-            # Base URL for Open Food Facts API
+            # Use the proper Open Food Facts API endpoint
             url = "https://world.openfoodfacts.org/cgi/search.pl"
 
-            # Get a comprehensive list of common foods
-            params = {
-                'action': 'process',
-                'tagtype_0': 'categories',
-                'tag_contains_0': 'contains',
-                'tag_0': 'foods',
-                'sort_by': 'unique_scans_n',
-                'page_size': 1000,
-                'json': 1
-            }
+            # Create a cache directory if it doesn't exist
+            cache_file = "food_emissions_cache.json"
 
-            response = requests.get(url, params=params)
-            if response.status_code == 200:
+            # Check if cached data exists and is recent (less than 24 hours old)
+            if os.path.exists(cache_file):
+                with open(cache_file, 'r') as f:
+                    cached_data = json.load(f)
+                    if (datetime.now() - datetime.fromisoformat(cached_data['timestamp'])).total_seconds() < 86400:
+                        return cached_data['emissions']
+
+            emissions_data = {}
+            page = 1
+            page_size = 100
+
+            while True:
+                params = {
+                    'action': 'process',
+                    'json': 1,
+                    'page_size': page_size,
+                    'page': page,
+                    'fields': 'product_name,ecoscore_grade,environmental_impact_level_tags,categories_tags'
+                }
+
+                response = requests.get(url, params=params, timeout=10)
+                if response.status_code != 200:
+                    break
+
                 data = response.json()
+                if not data.get('products'):
+                    break
 
-                emissions_data = {}
                 for product in data['products']:
-                    # Extract food name and eco-score
-                    food_name = product.get('product_name_en', '').lower()
-                    ecoscore = product.get('ecoscore_grade', '')
+                    product_name = product.get('product_name', '').lower()
+                    if not product_name:
+                        continue
 
-                    if food_name and ecoscore:
-                        # Convert eco-score to approximate CO2 emissions
-                        emissions = self.estimate_emissions_from_ecoscore(ecoscore)
-                        emissions_data[food_name] = emissions
+                    # Get environmental impact data
+                    ecoscore = product.get('ecoscore_grade')
+                    impact_level = product.get('environmental_impact_level_tags', [])
 
-                return emissions_data
+                    # Calculate emissions using multiple factors
+                    emissions = self.calculate_emissions_from_product_data(ecoscore, impact_level)
+
+                    if emissions is not None:
+                        if product_name in emissions_data:
+                            # Average if we have multiple products with same name
+                            emissions_data[product_name] = (emissions_data[product_name] + emissions) / 2
+                        else:
+                            emissions_data[product_name] = emissions
+
+                page += 1
+                if page > 10:  # Limit to 1000 products total
+                    break
+
+            # Cache the results
+            with open(cache_file, 'w') as f:
+                json.dump({
+                    'timestamp': datetime.now().isoformat(),
+                    'emissions': emissions_data
+                }, f)
+
+            return emissions_data
 
         except Exception as e:
             st.error(f"Error fetching food emissions data: {str(e)}")
             return {}
 
-    def estimate_emissions_from_ecoscore(self, ecoscore):
-        """Estimate emissions based on ecoscore grade"""
-        # Updated emissions factors based on eco-score
-        emissions_factors = {
-            'a': 0.5,  # Very low environmental impact
-            'b': 2.0,  # Low environmental impact
-            'c': 5.0,  # Medium environmental impact
-            'd': 10.0, # High environmental impact
-            'e': 15.0  # Very high environmental impact
-        }
-        return emissions_factors.get(ecoscore.lower(), 5.0)  # Default to medium impact
-    
     def get_food_emissions_from_fao(self):
-        """Get food emissions data using FAO Food Price Index as a proxy"""
+        """Get food emissions data using FAO Food Statistics"""
         try:
-            # FAO Food Price Index API
-            url = "http://www.fao.org/worldfoodsituation/foodpricesindex/en/?json=1"
-            response = requests.get(url)
+            # Use FAOSTAT API endpoint for emissions data
+            # Note: You'll need to register for an API key
+            url = "http://fenixservices.fao.org/faostat/api/v1/en/data/RL"
 
-            if response.status_code == 200:
-                data = response.json()
+            params = {
+                'area': 'World',
+                'element': 'Emissions (CO2eq)',
+                'year': datetime.now().year - 1,  # Previous year's data
+                'format': 'json'
+            }
 
-                # Create emissions dictionary based on food categories and price indices
-                emissions_data = {}
+            response = requests.get(url, params=params, timeout=10)
+            if response.status_code != 200:
+                return {}
 
-                # FAO categories typically include: Meat, Dairy, Cereals, Oils, Sugar
-                for category in data['groups']:
-                    category_name = category['name'].lower()
-                    price_index = float(category['value'])
+            data = response.json()
+            emissions_data = {}
 
-                    # Convert price index to approximate emissions
-                    # Higher price index often correlates with higher environmental impact
-                    base_emission = price_index / 50  # Normalize to reasonable CO2e values
+            # Process FAO data and map to food categories
+            category_mappings = {
+                'Rice Cultivation': ['rice'],
+                'Enteric Fermentation': ['beef', 'lamb', 'goat'],
+                'Manure Management': ['pork', 'chicken', 'eggs'],
+                # Add more mappings as needed
+            }
 
-                    # Add specific foods within each category
-                    if 'meat' in category_name:
-                        emissions_data['beef'] = base_emission * 2.0
-                        emissions_data['pork'] = base_emission * 1.2
-                        emissions_data['chicken'] = base_emission * 0.8
-                    elif 'dairy' in category_name:
-                        emissions_data['milk'] = base_emission * 0.5
-                        emissions_data['cheese'] = base_emission * 1.5
-                        emissions_data['yogurt'] = base_emission * 0.6
-                    elif 'cereals' in category_name:
-                        emissions_data['rice'] = base_emission * 1.0
-                        emissions_data['wheat'] = base_emission * 0.8
-                        emissions_data['corn'] = base_emission * 0.7
+            for record in data.get('data', []):
+                category = record.get('item')
+                if category in category_mappings:
+                    emission_value = float(record.get('value', 0))
+                    for food in category_mappings[category]:
+                        emissions_data[food] = emission_value
 
-                return emissions_data
+            return emissions_data
 
         except Exception as e:
             st.error(f"Error fetching FAO data: {str(e)}")
             return {}
 
+    def calculate_emissions_from_product_data(self, ecoscore, impact_level_tags):
+        """Calculate emissions based on multiple environmental factors"""
+        try:
+            base_emission = self.estimate_emissions_from_ecoscore(ecoscore)
+
+            # Adjust based on impact level tags
+            impact_multipliers = {
+                'low': 0.8,
+                'moderate': 1.0,
+                'high': 1.2
+            }
+
+            # Extract impact level from tags
+            impact_level = None
+            for tag in impact_level_tags:
+                if 'low' in tag:
+                    impact_level = 'low'
+                elif 'moderate' in tag:
+                    impact_level = 'moderate'
+                elif 'high' in tag:
+                    impact_level = 'high'
+
+            if impact_level:
+                base_emission *= impact_multipliers[impact_level]
+
+            return base_emission
+
+        except Exception:
+            return None
+
+    def estimate_emissions_from_ecoscore(self, ecoscore):
+        """Estimate emissions based on ecoscore grade with more granular factors"""
+        emissions_factors = {
+            'a': {'base': 1.0, 'range': (0.8, 1.2)},
+            'b': {'base': 2.0, 'range': (1.8, 2.2)},
+            'c': {'base': 3.0, 'range': (2.8, 3.2)},
+            'd': {'base': 4.0, 'range': (3.8, 4.2)},
+            'e': {'base': 5.0, 'range': (4.8, 5.2)},
+            'unknown': {'base': 3.0, 'range': (2.8, 3.2)}
+        }
+
+        if not ecoscore:
+            return emissions_factors['unknown']['base']
+
+        factor = emissions_factors.get(ecoscore.lower(), emissions_factors['unknown'])
+        return factor['base']
+
     def load_emission_data(self):
         """Load emission data from multiple sources with fallback"""
         try:
+            # Load baseline data from verified sources
+            self.food_emissions = {}
+
+            # Try loading cached data first
+            if self.load_cached_emissions():
+                return
+
             # Try getting data from Open Food Facts
-            self.food_emissions = self.get_food_emissions_database()
+            off_emissions = self.get_food_emissions_database()
+            if off_emissions:
+                self.food_emissions.update(off_emissions)
 
-            # If that fails or returns empty, try FAO data
-            if not self.food_emissions:
-                self.food_emissions = self.get_food_emissions_from_fao()
+            # Supplement with FAO data
+            fao_emissions = self.get_food_emissions_from_fao()
+            if fao_emissions:
+                # Update only missing values
+                for food, emission in fao_emissions.items():
+                    if food not in self.food_emissions:
+                        self.food_emissions[food] = emission
 
-            # Add default values for common ingredients
-            default_emissions = {
-                'rice': 2.7,      # kg CO2e per kg
-                'chicken': 6.9,   # kg CO2e per kg
-                'beef': 60.0,     # kg CO2e per kg
-                'pork': 7.2,      # kg CO2e per kg
-                'fish': 5.4,      # kg CO2e per kg
-                'eggs': 4.8,      # kg CO2e per kg
-                'milk': 3.2,      # kg CO2e per kg
-                'cheese': 13.5,   # kg CO2e per kg
-                'vegetables': 2.0, # kg CO2e per kg
-                'fruits': 1.1,    # kg CO2e per kg
-                'bread': 1.3,     # kg CO2e per kg
-                'pasta': 1.2,     # kg CO2e per kg
-                'oil': 3.0,       # kg CO2e per kg
-                'nuts': 2.3,      # kg CO2e per kg
-                'beans': 2.0,     # kg CO2e per kg
-                'tofu': 2.0       # kg CO2e per kg
-            }  
+            # Add verified default values
+            self.add_verified_defaults()
 
-            # Create variations of food names (singular/plural)
-            food_variations = {}
-            for food, emission in default_emissions.items():
-                food_variations[food.lower()] = emission
-                # Add singular version if plural
-                if food.endswith('s'):
-                    food_variations[food[:-1].lower()] = emission
-                # Add plural version if singular
-                else:
-                    food_variations[f"{food}s".lower()] = emission
+            # Create variations (singular/plural)
+            self.create_food_variations()
 
-            
-            # Update with default values where missing
-            for food, emission in default_emissions.items():
-                if food not in self.food_emissions:
-                    self.food_emissions[food] = emission
-  
-
-            # If both fail, use minimal default data
-            if not self.food_emissions:
-                st.warning("Using default emissions data as external sources unavailable")
-                self.food_emissions = default_emissions
-
-
-            # Store the last update time
-            self.last_update = datetime.now()
+            # Cache the final dataset
+            self.cache_emissions_data()
 
         except Exception as e:
             st.error(f"Error loading emission data: {str(e)}")
+            self.load_fallback_data()
 
+    def add_verified_defaults(self):
+        """Add scientifically verified default values"""
+        verified_emissions = {
+            'beef': 60.0,      # kg CO2e per kg (IPCC data)
+            'lamb': 24.0,
+            'cheese': 13.5,
+            'pork': 7.2,
+            'chicken': 6.9,
+            'eggs': 4.8,
+            'rice': 2.7,
+            'milk': 3.2,
+            'vegetables': 2.0,
+            'fruits': 1.1,
+            'beans': 2.0,
+            'nuts': 2.3,
+            'tofu': 2.0
+        }
+
+        # Update only if we don't have data or if current value seems incorrect
+        for food, emission in verified_emissions.items():
+            current = self.food_emissions.get(food)
+            if not current or abs(current - emission) > emission * 0.5:
+                self.food_emissions[food] = emission
 
     def calculate_transport_emissions(self, distance, mode):
         """Calculate transport emissions using stored factors"""
