@@ -305,12 +305,8 @@ class GreenLifeAssistant:
     def load_emission_data(self):
         """Load emission data from multiple sources with fallback"""
         try:
-            # Load baseline data from verified sources
+            # Initialize food emissions dictionary
             self.food_emissions = {}
-
-            # Try loading cached data first
-            if self.load_cached_emissions():
-                return
 
             # Try getting data from Open Food Facts
             off_emissions = self.get_food_emissions_database()
@@ -325,18 +321,73 @@ class GreenLifeAssistant:
                     if food not in self.food_emissions:
                         self.food_emissions[food] = emission
 
-            # Add verified default values
-            self.add_verified_defaults()
+            # Add verified default values if missing or seems incorrect
+            verified_emissions = {
+                'beef': 60.0,      # kg CO2e per kg
+                'lamb': 24.0,
+                'cheese': 13.5,
+                'pork': 7.2,
+                'chicken': 6.9,
+                'eggs': 4.8,
+                'egg': 4.8,       # Add singular form
+                'rice': 2.7,
+                'milk': 3.2,
+                'vegetables': 2.0,
+                'fruits': 1.1,
+                'beans': 2.0,
+                'nuts': 2.3,
+                'tofu': 2.0,
+                'bread': 1.3,
+                'pasta': 1.2,
+                'oil': 3.0
+            }
 
-            # Create variations (singular/plural)
-            self.create_food_variations()
+            # Update with verified values where needed
+            for food, emission in verified_emissions.items():
+                current = self.food_emissions.get(food)
+                if not current or abs(current - emission) > emission * 0.5:
+                    self.food_emissions[food] = emission
 
-            # Cache the final dataset
-            self.cache_emissions_data()
+            # Create variations of food names (singular/plural)
+            food_variations = {}
+            for food, emission in self.food_emissions.items():
+                food_lower = food.lower()
+                food_variations[food_lower] = emission
+                # Add singular version if plural
+                if food_lower.endswith('s'):
+                    food_variations[food_lower[:-1]] = emission
+                # Add plural version if singular
+                else:
+                    food_variations[f"{food_lower}s"] = emission
+
+            # Update with variations
+            self.food_emissions.update(food_variations)
+
+            # Store the last update time
+            self.last_update = datetime.now()
 
         except Exception as e:
             st.error(f"Error loading emission data: {str(e)}")
-            self.load_fallback_data()
+            # Fallback to verified emissions if everything else fails
+            self.food_emissions = {
+                'beef': 60.0,
+                'chicken': 6.9,
+                'pork': 7.2,
+                'fish': 5.4,
+                'eggs': 4.8,
+                'egg': 4.8,
+                'milk': 3.2,
+                'cheese': 13.5,
+                'vegetables': 2.0,
+                'fruits': 1.1,
+                'bread': 1.3,
+                'pasta': 1.2,
+                'rice': 2.7,
+                'oil': 3.0,
+                'nuts': 2.3,
+                'beans': 2.0,
+                'tofu': 2.0
+            }
 
     def add_verified_defaults(self):
         """Add scientifically verified default values"""
