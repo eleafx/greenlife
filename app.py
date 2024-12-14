@@ -37,6 +37,8 @@ class FAODataManager:
 
             print("Fetching data from FAOSTAT...")
             response = requests.get(base_url, params=params, timeout=15)
+            response.raise_for_status()  # Added to raise exception for bad status codes
+
 
             if response.status_code == 200:
                 data = response.json()
@@ -72,9 +74,10 @@ class FAODataManager:
                 print(f"FAOSTAT API request failed: {response.status_code}")
                 return self.get_default_data()
 
-        except Exception as e:
-            print(f"Error fetching FAOSTAT data: {e}")
+        except requests.exceptions.RequestException as e:
+            print(f"Error accessing FAO API: {e}")
             return self.get_default_data()
+
 
     def clean_product_name(self, name):
         """Clean and standardize product names"""
@@ -965,37 +968,63 @@ class GreenLifeAssistant:
             )    
 
         
-        if st.button("Track This Meal"):
-            # Store meal activity data
-            new_activity = {
-                'date': datetime.now(),
-                'type': 'meal',
-                'description': meal_description,
-                'cooking_method': cooking_method,
-                'energy_source': energy_source,
-                'emissions': analysis['emissions'],
-                'ingredients': [(info['ingredient'], info['total_emission']) for info in analysis['detailed_info']], # Changed from 'emission' to 'total_emission'
-                'detailed_info': analysis['detailed_info']
-            }
-            st.session_state.activities.append(new_activity)
-            st.session_state.total_emissions += analysis['emissions']
+        if st.button("Analyze Meal"):
+            valid, error_message = self.validate_input(meal_input, cooking_method, energy_source)
+            if not valid:
+                st.error(error_message)
+                return
+            if meal_input:
+                analysis = self.analyze_meal(
+                    meal_input,
+                    cooking_method=cooking_method,
+                    energy_source=energy_source
+                )
+                # Display results
+                st.header("Analysis Results")
 
-            # Display results
-            st.success(f"Meal tracked! Total emissions: {analysis['emissions']:.2f} kg CO2e")
+                # Show ingredient breakdown
+                st.subheader("Ingredients Breakdown")
+                for info in analysis['detailed_info']:
+                    with st.expander(f"{info['ingredient'].title()}"):
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.write(f"Amount: {info['original_amount']}")
+                            st.write(f"Weight: {info['grams']}g")
+                        with col2:
+                            st.write(f"Base Emissions: {info['base_emission']:.2f} kg CO2e")
+                            st.write(f"Cooking Emissions: {info['cooking_emission']:.2f} kg CO2e")
+                            st.write(f"Total: {info['total_emission']:.2f} kg CO2e")
 
-            # Create emissions visualization
-            ingredients_df = pd.DataFrame(
-                [(info['ingredient'], info['total_emission']) for info in analysis['detailed_info']], # Changed from 'emission' to 'total_emission'
-                columns=['Ingredient', 'Emissions']
-            )
+                # Show total emissions
+                st.metric(
+                    "Total Meal Emissions", 
+                    f"{analysis['emissions']:.2f} kg CO2e",
+                    help="Total carbon dioxide equivalent emissions for this meal"
+                )
 
-            fig = px.pie(
-                ingredients_df,
-                values='Emissions',
-                names='Ingredient',
-                title='Emissions Distribution by Ingredient'
-            )
-            st.plotly_chart(fig)
+                # Generate and display recommendations
+                recommendations = self.generate_meal_recommendations(
+                    analysis['ingredients'],
+                    cooking_method,
+                    energy_source
+                )
+
+                self.display_recommendations(recommendations)
+
+
+                # Create emissions chart
+                emissions_data = pd.DataFrame(
+                    analysis['ingredients'],
+                    columns=['Ingredient', 'Emissions']
+                )
+
+                fig = px.pie(
+                    emissions_data, 
+                    values='Emissions', 
+                    names='Ingredient',
+                    title='Emissions Distribution by Ingredient'
+                )
+                st.plotly_chart(fig)
         else:
             st.info("Please enter ingredients to analyze")
     
@@ -1025,7 +1054,7 @@ class GreenLifeAssistant:
                             'total_emissions': 0
                         }
                     stats['common_ingredients'][ingredient]['count'] += 1
-                    stats['common_ingredients'][ingredient]['total_emissions'] += info['emission']
+                    stats['common_ingredients'][ingredient]['total_emissions'] += info['total_emission']
 
         # Sort meals by impact
         sorted_meals = sorted(meal_activities, key=lambda x: x['emissions'])
@@ -1518,10 +1547,10 @@ def main():
                             'date': datetime.now(),
                             'type': 'meal',
                             'description': meal_description,
-                            'cooking_method': cooking_method,  # Add these
-                            'energy_source': energy_source,    # Add these
-                            'emissions': analysis['emissions'], # Use analysis emissions instead of total_emissions
-                            'ingredients': [(info['ingredient'], info['total_emission']) for info in analysis['detailed_info']], # Use total_emission
+                            'cooking_method': cooking_method,
+                            'energy_source': energy_source,
+                            'emissions': analysis['emissions'],
+                            'ingredients': [(info['ingredient'], info['total_emission']) for info in analysis['detailed_info']], 
                             'detailed_info': analysis['detailed_info']
                         }
                         st.session_state.activities.append(new_activity)
@@ -1532,7 +1561,7 @@ def main():
 
                         # Create emissions visualization
                         ingredients_df = pd.DataFrame(
-                            [(info['ingredient'], info['emission']) for info in analysis['detailed_info']],
+                            [(info['ingredient'], info['total_emission']) for info in analysis['detailed_info']], # Changed from 'emission' to 'total_emission'
                             columns=['Ingredient', 'Emissions']
                         )
 
@@ -1543,17 +1572,6 @@ def main():
                             title='Emissions Distribution by Ingredient'
                         )
                         st.plotly_chart(fig)
-
-                        # Get and display recommendations
-                        feedback = app.generate_feedback('meal', {
-                            'emissions': total_emissions,
-                            'ingredients': [(info['ingredient'], info['emission']) 
-                                          for info in analysis['detailed_info']]
-                        })
-
-                        st.subheader("Sustainability Tips:")
-                        for suggestion in feedback['suggestions']:
-                            st.write(f"• {suggestion}")
 
                 else:
                     st.warning("No ingredients detected. Please try rephrasing your meal description.")
