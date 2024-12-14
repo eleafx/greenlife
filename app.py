@@ -6,6 +6,8 @@ from datetime import datetime
 import requests
 from transformers import pipeline
 import numpy as np
+import os
+import json
 
 class GreenLifeAssistant:
     def __init__(self):
@@ -140,72 +142,40 @@ class GreenLifeAssistant:
             st.error(f"Error fetching food data: {str(e)}")
             return None
 
+    import os
+    import json
+    import requests
+    from datetime import datetime
+    import streamlit as st
+
     def get_food_emissions_database(self):
         """Get food emissions data from Open Food Facts"""
         try:
-            # Use the proper Open Food Facts API endpoint
             url = "https://world.openfoodfacts.org/cgi/search.pl"
-
-            # Create a cache directory if it doesn't exist
-            cache_file = "food_emissions_cache.json"
-
-            # Check if cached data exists and is recent (less than 24 hours old)
-            if os.path.exists(cache_file):
-                with open(cache_file, 'r') as f:
-                    cached_data = json.load(f)
-                    if (datetime.now() - datetime.fromisoformat(cached_data['timestamp'])).total_seconds() < 86400:
-                        return cached_data['emissions']
+            params = {
+                'action': 'process',
+                'json': 1,
+                'page_size': 100,
+                'fields': 'product_name,ecoscore_grade,environmental_impact_level_tags'
+            }
 
             emissions_data = {}
-            page = 1
-            page_size = 100
+            response = requests.get(url, params=params, timeout=5)
 
-            while True:
-                params = {
-                    'action': 'process',
-                    'json': 1,
-                    'page_size': page_size,
-                    'page': page,
-                    'fields': 'product_name,ecoscore_grade,environmental_impact_level_tags,categories_tags'
-                }
-
-                response = requests.get(url, params=params, timeout=10)
-                if response.status_code != 200:
-                    break
-
+            if response.status_code == 200:
                 data = response.json()
-                if not data.get('products'):
-                    break
-
-                for product in data['products']:
+                for product in data.get('products', []):
                     product_name = product.get('product_name', '').lower()
                     if not product_name:
                         continue
 
-                    # Get environmental impact data
                     ecoscore = product.get('ecoscore_grade')
-                    impact_level = product.get('environmental_impact_level_tags', [])
-
-                    # Calculate emissions using multiple factors
-                    emissions = self.calculate_emissions_from_product_data(ecoscore, impact_level)
-
-                    if emissions is not None:
+                    if ecoscore:
+                        emissions = self.estimate_emissions_from_ecoscore(ecoscore)
                         if product_name in emissions_data:
-                            # Average if we have multiple products with same name
                             emissions_data[product_name] = (emissions_data[product_name] + emissions) / 2
                         else:
                             emissions_data[product_name] = emissions
-
-                page += 1
-                if page > 10:  # Limit to 1000 products total
-                    break
-
-            # Cache the results
-            with open(cache_file, 'w') as f:
-                json.dump({
-                    'timestamp': datetime.now().isoformat(),
-                    'emissions': emissions_data
-                }, f)
 
             return emissions_data
 
@@ -214,93 +184,35 @@ class GreenLifeAssistant:
             return {}
 
     def get_food_emissions_from_fao(self):
-        """Get food emissions data using FAO Food Statistics"""
+        """Get food emissions data using basic food categories"""
         try:
-            # Use FAOSTAT API endpoint for emissions data
-            # Note: You'll need to register for an API key
-            url = "http://fenixservices.fao.org/faostat/api/v1/en/data/RL"
-
-            params = {
-                'area': 'World',
-                'element': 'Emissions (CO2eq)',
-                'year': datetime.now().year - 1,  # Previous year's data
-                'format': 'json'
+            # Use simplified static data instead of unreliable API
+            basic_emissions = {
+                'cereals': 2.7,
+                'meat': 25.0,
+                'dairy': 10.0,
+                'vegetables': 2.0,
+                'fruits': 1.1
             }
 
-            response = requests.get(url, params=params, timeout=10)
-            if response.status_code != 200:
-                return {}
-
-            data = response.json()
-            emissions_data = {}
-
-            # Process FAO data and map to food categories
-            category_mappings = {
-                'Rice Cultivation': ['rice'],
-                'Enteric Fermentation': ['beef', 'lamb', 'goat'],
-                'Manure Management': ['pork', 'chicken', 'eggs'],
-                # Add more mappings as needed
-            }
-
-            for record in data.get('data', []):
-                category = record.get('item')
-                if category in category_mappings:
-                    emission_value = float(record.get('value', 0))
-                    for food in category_mappings[category]:
-                        emissions_data[food] = emission_value
-
-            return emissions_data
+            return basic_emissions
 
         except Exception as e:
-            st.error(f"Error fetching FAO data: {str(e)}")
+            st.error(f"Error with FAO data: {str(e)}")
             return {}
 
-    def calculate_emissions_from_product_data(self, ecoscore, impact_level_tags):
-        """Calculate emissions based on multiple environmental factors"""
-        try:
-            base_emission = self.estimate_emissions_from_ecoscore(ecoscore)
-
-            # Adjust based on impact level tags
-            impact_multipliers = {
-                'low': 0.8,
-                'moderate': 1.0,
-                'high': 1.2
-            }
-
-            # Extract impact level from tags
-            impact_level = None
-            for tag in impact_level_tags:
-                if 'low' in tag:
-                    impact_level = 'low'
-                elif 'moderate' in tag:
-                    impact_level = 'moderate'
-                elif 'high' in tag:
-                    impact_level = 'high'
-
-            if impact_level:
-                base_emission *= impact_multipliers[impact_level]
-
-            return base_emission
-
-        except Exception:
-            return None
-
     def estimate_emissions_from_ecoscore(self, ecoscore):
-        """Estimate emissions based on ecoscore grade with more granular factors"""
+        """Estimate emissions based on ecoscore grade"""
         emissions_factors = {
-            'a': {'base': 1.0, 'range': (0.8, 1.2)},
-            'b': {'base': 2.0, 'range': (1.8, 2.2)},
-            'c': {'base': 3.0, 'range': (2.8, 3.2)},
-            'd': {'base': 4.0, 'range': (3.8, 4.2)},
-            'e': {'base': 5.0, 'range': (4.8, 5.2)},
-            'unknown': {'base': 3.0, 'range': (2.8, 3.2)}
+            'a': 1.0,
+            'b': 2.0,
+            'c': 3.0,
+            'd': 4.0,
+            'e': 5.0,
+            'unknown': 3.0
         }
 
-        if not ecoscore:
-            return emissions_factors['unknown']['base']
-
-        factor = emissions_factors.get(ecoscore.lower(), emissions_factors['unknown'])
-        return factor['base']
+        return emissions_factors.get(str(ecoscore).lower(), emissions_factors['unknown'])
 
     def load_emission_data(self):
         """Load emission data from multiple sources with fallback"""
@@ -313,15 +225,7 @@ class GreenLifeAssistant:
             if off_emissions:
                 self.food_emissions.update(off_emissions)
 
-            # Supplement with FAO data
-            fao_emissions = self.get_food_emissions_from_fao()
-            if fao_emissions:
-                # Update only missing values
-                for food, emission in fao_emissions.items():
-                    if food not in self.food_emissions:
-                        self.food_emissions[food] = emission
-
-            # Add verified default values if missing or seems incorrect
+            # Add verified default values
             verified_emissions = {
                 'beef': 60.0,      # kg CO2e per kg
                 'lamb': 24.0,
