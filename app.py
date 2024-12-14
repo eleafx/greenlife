@@ -151,65 +151,105 @@ class GreenLifeAssistant:
     def get_food_emissions_database(self):
         """Get food emissions data from Open Food Facts"""
         try:
-            url = "https://world.openfoodfacts.org/cgi/search.pl"
-            params = {
-                'action': 'process',
-                'json': 1,
-                'page_size': 100,
-                'fields': 'product_name,ecoscore_grade,environmental_impact_level_tags'
-            }
-
             emissions_data = {}
-            response = requests.get(url, params=params, timeout=5)
 
-            if response.status_code == 200:
-                data = response.json()
-                for product in data.get('products', []):
-                    product_name = product.get('product_name', '').lower()
-                    if not product_name:
-                        continue
+            # List of common food categories to search
+            categories = [
+                'fruits', 'vegetables', 'meats', 'dairy', 'grains', 
+                'legumes', 'beverages', 'snacks', 'seafood'
+            ]
 
-                    ecoscore = product.get('ecoscore_grade')
-                    if ecoscore:
-                        emissions = self.estimate_emissions_from_ecoscore(ecoscore)
-                        if product_name in emissions_data:
-                            emissions_data[product_name] = (emissions_data[product_name] + emissions) / 2
-                        else:
-                            emissions_data[product_name] = emissions
+            for category in categories:
+                url = "https://world.openfoodfacts.org/cgi/search.pl"
+                params = {
+                    'action': 'process',
+                    'tagtype_0': 'categories',
+                    'tag_contains_0': 'contains',
+                    'tag_0': category,
+                    'json': 1,
+                    'page_size': 100,
+                    'fields': 'product_name,product_name_en,categories,ecoscore_grade,environmental_impact_level_tags'
+                }
 
+                try:
+                    response = requests.get(url, params=params, timeout=5)
+                    if response.status_code == 200:
+                        data = response.json()
+
+                        for product in data.get('products', []):
+                            # Get product name (try English name first, then general name)
+                            product_name = (product.get('product_name_en') or 
+                                          product.get('product_name', '')).lower()
+
+                            # Clean up the product name
+                            product_name = self.clean_product_name(product_name)
+
+                            if not product_name:
+                                continue
+
+                            # Get environmental data
+                            ecoscore = product.get('ecoscore_grade')
+                            if ecoscore:
+                                emissions = self.estimate_emissions_from_ecoscore(ecoscore)
+
+                                # Update emissions data with running average
+                                if product_name in emissions_data:
+                                    emissions_data[product_name] = (emissions_data[product_name] + emissions) / 2
+                                else:
+                                    emissions_data[product_name] = emissions
+
+                            # Debug info
+                            if product_name and ecoscore:
+                                print(f"Found: {product_name} with ecoscore {ecoscore}")
+
+                except requests.exceptions.RequestException as e:
+                    st.warning(f"Error fetching data for {category}: {str(e)}")
+                    continue
+
+            print(f"Total products found: {len(emissions_data)}")
             return emissions_data
 
         except Exception as e:
             st.error(f"Error fetching food emissions data: {str(e)}")
             return {}
 
-    def get_food_emissions_from_fao(self):
-        """Get food emissions data using basic food categories"""
-        try:
-            # Use simplified static data instead of unreliable API
-            basic_emissions = {
-                'cereals': 2.7,
-                'meat': 25.0,
-                'dairy': 10.0,
-                'vegetables': 2.0,
-                'fruits': 1.1
-            }
+    def clean_product_name(self, name):
+        """Clean up product names for consistency"""
+        if not name:
+            return ""
 
-            return basic_emissions
+        # Convert to lowercase and remove extra spaces
+        name = name.lower().strip()
 
-        except Exception as e:
-            st.error(f"Error with FAO data: {str(e)}")
-            return {}
+        # Remove brand names and packaging info (common patterns)
+        remove_patterns = [
+            r'\b\d+\s*[gkm]?g\b',  # weights
+            r'\b\d+\s*pack\b',     # pack sizes
+            r'\b\d+\s*pieces?\b',  # piece counts
+            r'\(.*?\)',            # anything in parentheses
+            r'™',                  # trademark symbols
+            r'®',                  # registered trademark symbols
+        ]
+
+        import re
+        for pattern in remove_patterns:
+            name = re.sub(pattern, '', name)
+
+        # Remove extra spaces and common filler words
+        name = ' '.join(word for word in name.split() 
+                       if word not in ['brand', 'fresh', 'frozen', 'organic'])
+
+        return name.strip()
 
     def estimate_emissions_from_ecoscore(self, ecoscore):
-        """Estimate emissions based on ecoscore grade"""
+        """Estimate emissions based on ecoscore grade with more granular factors"""
         emissions_factors = {
-            'a': 1.0,
-            'b': 2.0,
-            'c': 3.0,
-            'd': 4.0,
-            'e': 5.0,
-            'unknown': 3.0
+            'a': 1.5,    # Very low environmental impact
+            'b': 3.0,    # Low environmental impact
+            'c': 5.0,    # Medium environmental impact
+            'd': 7.5,    # High environmental impact
+            'e': 10.0,   # Very high environmental impact
+            'unknown': 5.0
         }
 
         return emissions_factors.get(str(ecoscore).lower(), emissions_factors['unknown'])
@@ -221,9 +261,13 @@ class GreenLifeAssistant:
             self.food_emissions = {}
 
             # Try getting data from Open Food Facts
+            print("Fetching data from Open Food Facts...")
             off_emissions = self.get_food_emissions_database()
             if off_emissions:
+                print(f"Found {len(off_emissions)} items from Open Food Facts")
                 self.food_emissions.update(off_emissions)
+            else:
+                print("No data retrieved from Open Food Facts")
 
             # Add verified default values
             verified_emissions = {
@@ -233,7 +277,7 @@ class GreenLifeAssistant:
                 'pork': 7.2,
                 'chicken': 6.9,
                 'eggs': 4.8,
-                'egg': 4.8,       # Add singular form
+                'egg': 4.8,       
                 'rice': 2.7,
                 'milk': 3.2,
                 'vegetables': 2.0,
@@ -247,6 +291,7 @@ class GreenLifeAssistant:
             }
 
             # Update with verified values where needed
+            print("Updating with verified values...")
             for food, emission in verified_emissions.items():
                 current = self.food_emissions.get(food)
                 if not current or abs(current - emission) > emission * 0.5:
@@ -267,31 +312,17 @@ class GreenLifeAssistant:
             # Update with variations
             self.food_emissions.update(food_variations)
 
+            # Print final database stats
+            print(f"Final database size: {len(self.food_emissions)} items")
+            print("Sample of database items:", list(self.food_emissions.items())[:5])
+
             # Store the last update time
             self.last_update = datetime.now()
 
         except Exception as e:
             st.error(f"Error loading emission data: {str(e)}")
             # Fallback to verified emissions if everything else fails
-            self.food_emissions = {
-                'beef': 60.0,
-                'chicken': 6.9,
-                'pork': 7.2,
-                'fish': 5.4,
-                'eggs': 4.8,
-                'egg': 4.8,
-                'milk': 3.2,
-                'cheese': 13.5,
-                'vegetables': 2.0,
-                'fruits': 1.1,
-                'bread': 1.3,
-                'pasta': 1.2,
-                'rice': 2.7,
-                'oil': 3.0,
-                'nuts': 2.3,
-                'beans': 2.0,
-                'tofu': 2.0
-            }
+            self.food_emissions = verified_emissions
 
     def add_verified_defaults(self):
         """Add scientifically verified default values"""
