@@ -848,12 +848,31 @@ class GreenLifeAssistant:
             detailed_info = []
 
             for ingredient in ingredients:
-                # Parse amount and ingredient
-                parts = ingredient.strip().split(' ', 1)
-                if len(parts) > 1:
-                    amount_str, food = parts
+                # Improved parsing
+                ingredient = ingredient.strip()
+                # Match pattern like "2 cups rice" or "300g chicken"
+                parts = ingredient.split()
+
+                if len(parts) >= 2:
+                    # Try to find the unit in the ingredient string
+                    amount_str = parts[0]  # First part is the amount
+
+                    # Check if the second part is a unit
+                    possible_units = ['cup', 'cups', 'tbsp', 'tsp', 'tablespoon', 'teaspoon', 
+                                    'piece', 'pieces', 'g', 'gram', 'grams', 'kg', 'kilogram', 
+                                    'serving', 'servings', 'oz', 'ounce', 'lb', 'pound']
+
+                    if parts[1].lower() in possible_units:
+                        # Unit is present, food name starts after unit
+                        food = ' '.join(parts[2:])
+                        amount_str = f"{parts[0]} {parts[1]}"
+                    else:
+                        # No unit present, assume pieces
+                        food = ' '.join(parts[1:])
+                        amount_str = f"{parts[0]} piece"
                 else:
-                    amount_str, food = '1 piece', parts[0]
+                    # Default to 1 piece if no amount specified
+                    amount_str, food = '1 piece', ingredient
 
                 # Get base ingredient emissions
                 unit, amount = self.parse_food_amount(amount_str)
@@ -871,7 +890,7 @@ class GreenLifeAssistant:
                         self.food_emissions.get(food_plural)
                     )
                     if emission_factor is None:
-                        st.warning(f"No emission data found for {food}. Using default value.Using default value of 3.0 kg CO2e/kg. This is an estimate and actual emissions may vary.")
+                        st.warning(f"No emission data found for {food}. Using default value of 3.0 kg CO2e/kg. This is an estimate and actual emissions may vary.")
                         emission_factor = 3.0
                     base_emission = (grams / 1000) * emission_factor
 
