@@ -965,63 +965,37 @@ class GreenLifeAssistant:
             )    
 
         
-        if st.button("Analyze Meal"):
-            valid, error_message = self.validate_input(meal_input, cooking_method, energy_source)
-            if not valid:
-                st.error(error_message)
-                return
-            if meal_input:
-                analysis = self.analyze_meal(
-                    meal_input,
-                    cooking_method=cooking_method,
-                    energy_source=energy_source
-                )
-                # Display results
-                st.header("Analysis Results")
+        if st.button("Track This Meal"):
+            # Store meal activity data
+            new_activity = {
+                'date': datetime.now(),
+                'type': 'meal',
+                'description': meal_description,
+                'cooking_method': cooking_method,
+                'energy_source': energy_source,
+                'emissions': analysis['emissions'],
+                'ingredients': [(info['ingredient'], info['total_emission']) for info in analysis['detailed_info']], # Changed from 'emission' to 'total_emission'
+                'detailed_info': analysis['detailed_info']
+            }
+            st.session_state.activities.append(new_activity)
+            st.session_state.total_emissions += analysis['emissions']
 
-                # Show ingredient breakdown
-                st.subheader("Ingredients Breakdown")
-                for info in analysis['detailed_info']:
-                    with st.expander(f"{info['ingredient'].title()}"):
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.write(f"Amount: {info['original_amount']}")
-                            st.write(f"Weight: {info['grams']}g")
-                        with col2:
-                            st.write(f"Base Emissions: {info['base_emission']:.2f} kg CO2e")
-                            st.write(f"Cooking Emissions: {info['cooking_emission']:.2f} kg CO2e")
-                            st.write(f"Total: {info['total_emission']:.2f} kg CO2e")
+            # Display results
+            st.success(f"Meal tracked! Total emissions: {analysis['emissions']:.2f} kg CO2e")
 
-                # Show total emissions
-                st.metric(
-                    "Total Meal Emissions", 
-                    f"{analysis['emissions']:.2f} kg CO2e",
-                    help="Total carbon dioxide equivalent emissions for this meal"
-                )
+            # Create emissions visualization
+            ingredients_df = pd.DataFrame(
+                [(info['ingredient'], info['total_emission']) for info in analysis['detailed_info']], # Changed from 'emission' to 'total_emission'
+                columns=['Ingredient', 'Emissions']
+            )
 
-                # Generate and display recommendations
-                recommendations = self.generate_meal_recommendations(
-                    analysis['ingredients'],
-                    cooking_method,
-                    energy_source
-                )
-
-                self.display_recommendations(recommendations)
-
-
-                # Create emissions chart
-                emissions_data = pd.DataFrame(
-                    analysis['ingredients'],
-                    columns=['Ingredient', 'Emissions']
-                )
-
-                fig = px.pie(
-                    emissions_data, 
-                    values='Emissions', 
-                    names='Ingredient',
-                    title='Emissions Distribution by Ingredient'
-                )
-                st.plotly_chart(fig)
+            fig = px.pie(
+                ingredients_df,
+                values='Emissions',
+                names='Ingredient',
+                title='Emissions Distribution by Ingredient'
+            )
+            st.plotly_chart(fig)
         else:
             st.info("Please enter ingredients to analyze")
     
