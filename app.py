@@ -8,15 +8,195 @@ from transformers import pipeline
 import numpy as np
 import os
 import json
+from datetime import datetime, timedelta
+import time
+import threading
+
+class FAODataManager:
+    def __init__(self):
+        self.cache_duration = timedelta(hours=24)
+        self.last_update = None
+        self.data = {}
+        self.lock = threading.Lock()
+
+    def fetch_fao_data(self):
+        """Fetch emission data from FAOSTAT public API"""
+        try:
+            # FAOSTAT public API endpoint
+            base_url = "https://fenixservices.fao.org/faostat/api/v1/en/data/GE"
+
+            params = {
+                'area': ['5000'],  # World
+                'element': ['5312'],  # GHG emissions (CO2eq)
+                'item': 'all',
+                'year': '2021',  # Most recent year
+                'show_codes': True,
+                'show_unit': True,
+                'output_type': 'json'
+            }
+
+            print("Fetching data from FAOSTAT...")
+            response = requests.get(base_url, params=params, timeout=15)
+
+            if response.status_code == 200:
+                data = response.json()
+                emissions_data = {}
+
+                for record in data.get('data', []):
+                    try:
+                        item_name = record.get('item_name_e', '').lower()
+                        value = float(record.get('value', 0))
+                        unit = record.get('unit', '')
+
+                        # Convert to kg CO2e per kg product
+                        if unit == 'gigagrams':
+                            value = value / 1000000  # Convert to kg per kg product
+
+                        if item_name and value > 0:
+                            # Clean and standardize the item name
+                            cleaned_name = self.clean_product_name(item_name)
+                            if cleaned_name:
+                                if cleaned_name in emissions_data:
+                                    # Average if we have multiple values
+                                    emissions_data[cleaned_name] = (emissions_data[cleaned_name] + value) / 2
+                                else:
+                                    emissions_data[cleaned_name] = value
+
+                    except (ValueError, TypeError) as e:
+                        print(f"Error processing FAO record: {e}")
+                        continue
+
+                print(f"Successfully loaded {len(emissions_data)} items from FAOSTAT")
+                return emissions_data
+            else:
+                print(f"FAOSTAT API request failed: {response.status_code}")
+                return self.get_default_data()
+
+        except Exception as e:
+            print(f"Error fetching FAOSTAT data: {e}")
+            return self.get_default_data()
+
+    def clean_product_name(self, name):
+        """Clean and standardize product names"""
+        if not name:
+            return ""
+
+        name = name.lower().strip()
+
+        # Remove specific FAO terminology
+        remove_terms = [
+            'production', 'total', 'raw', 'fresh', 
+            'dried', 'processed', '(total)', ',', '.'
+        ]
+
+        for term in remove_terms:
+            name = name.replace(term, '')
+
+        # Clean up extra spaces
+        name = ' '.join(name.split())
+
+        # Map common FAO names to standard names
+        name_mapping = {
+            'bovine meat': 'beef',
+            'poultry meat': 'chicken',
+            'swine meat': 'pork',
+            'sheep meat': 'lamb',
+            'marine fish': 'fish',
+            'hen eggs': 'eggs'
+        }
+
+        return name_mapping.get(name, name)
+
+    def get_default_data(self):
+        """Provide default emission values if API fails"""
+        return {
+            'beef': 60.0,
+            'lamb': 24.0,
+            'pork': 7.2,
+            'chicken': 6.9,
+            'fish': 5.4,
+            'eggs': 4.8,
+            'milk': 3.2,
+            'cheese': 13.5,
+            'rice': 2.7,
+            'wheat': 0.8,
+            'potatoes': 0.5,
+            'vegetables': 2.0,
+            'fruits': 1.1,
+            'beans': 2.0,
+            'nuts': 2.3
+        }
+
+    def get_data(self):
+        """Get FAO data with caching"""
+        with self.lock:
+            current_time = datetime.now()
+
+            # Check if cache needs updating
+            if (not self.last_update or 
+                current_time - self.last_update > self.cache_duration or 
+                not self.data):
+
+                new_data = self.fetch_fao_data()
+                if new_data:
+                    self.data = new_data
+                    self.last_update = current_time
+                    # Save to local cache file
+                    self.save_to_cache()
+                else:
+                    # Try loading from cache file
+                    self.load_from_cache()
+
+            return self.data.copy()
+
+    def save_to_cache(self):
+        """Save data to local cache file"""
+        try:
+            cache_dir = 'cache'
+            os.makedirs(cache_dir, exist_ok=True)
+            cache_file = os.path.join(cache_dir, 'fao_cache.json')
+
+            cache_data = {
+                'timestamp': self.last_update.isoformat(),
+                'data': self.data
+            }
+
+            with open(cache_file, 'w') as f:
+                json.dump(cache_data, f)
+
+        except Exception as e:
+            print(f"Error saving to cache: {e}")
+
+    def load_from_cache(self):
+        """Load data from local cache file"""
+        try:
+            cache_file = os.path.join('cache', 'fao_cache.json')
+
+            if os.path.exists(cache_file):
+                with open(cache_file, 'r') as f:
+                    cache_data = json.load(f)
+
+                self.last_update = datetime.fromisoformat(cache_data['timestamp'])
+                self.data = cache_data['data']
+                return True
+
+        except Exception as e:
+            print(f"Error loading from cache: {e}")
+            return False
 
 class GreenLifeAssistant:
     def __init__(self):
         try:
+            # Initialize FAO data manager
+            self.fao_manager = FAODataManager()
+
+            # Initialize other components
             self.classifier = pipeline("zero-shot-classification",
                                      model="facebook/bart-large-mnli")
         except Exception as e:
-            st.error(f"Error loading classification model: {str(e)}")
+            st.error(f"Error initializing GreenLife Assistant: {str(e)}")
             self.classifier = None
+
 
         # Add impact thresholds first
         self.impact_thresholds = {
@@ -93,6 +273,9 @@ class GreenLifeAssistant:
             }
         }
 
+        # Initialize the database
+        self.load_emission_data()
+
 
     def get_food_data(self, food_name):
         """Get food data from Open Food Facts API"""
@@ -142,104 +325,174 @@ class GreenLifeAssistant:
             st.error(f"Error fetching food data: {str(e)}")
             return None
 
-    import os
-    import json
-    import requests
-    from datetime import datetime
-    import streamlit as st
 
     def get_food_emissions_database(self):
-        """Get food emissions data from Open Food Facts"""
+        """Get food emissions data from Open Food Facts with better search strategy"""
         try:
             emissions_data = {}
 
-            # List of common food categories to search
-            categories = [
-                'fruits', 'vegetables', 'meats', 'dairy', 'grains', 
-                'legumes', 'beverages', 'snacks', 'seafood'
+            # Define search strategy for raw ingredients
+            search_categories = [
+                {'category': 'fresh-foods', 'tag_type': 'categories'},
+                {'category': 'vegetables', 'tag_type': 'categories'},
+                {'category': 'fruits', 'tag_type': 'categories'},
+                {'category': 'legumes', 'tag_type': 'categories'},
+                {'category': 'cereals-and-potatoes', 'tag_type': 'categories'},
+                {'category': 'raw', 'tag_type': 'states'}
             ]
 
-            for category in categories:
-                url = "https://world.openfoodfacts.org/cgi/search.pl"
+            base_url = "https://world.openfoodfacts.org/cgi/search.pl"
+
+            for search in search_categories:
                 params = {
                     'action': 'process',
-                    'tagtype_0': 'categories',
+                    'tagtype_0': search['tag_type'],
                     'tag_contains_0': 'contains',
-                    'tag_0': category,
+                    'tag_0': search['category'],
+                    'tagtype_1': 'states',  # Add state filter
+                    'tag_contains_1': 'contains',
+                    'tag_1': 'en:raw',  # Filter for raw ingredients
                     'json': 1,
                     'page_size': 100,
-                    'fields': 'product_name,product_name_en,categories,ecoscore_grade,environmental_impact_level_tags'
+                    'fields': 'product_name,product_name_en,categories,ecoscore_grade,states'
                 }
 
                 try:
-                    response = requests.get(url, params=params, timeout=5)
+                    response = requests.get(base_url, params=params, timeout=10)
                     if response.status_code == 200:
                         data = response.json()
 
                         for product in data.get('products', []):
-                            # Get product name (try English name first, then general name)
+                            # Prefer English name, fallback to general name
                             product_name = (product.get('product_name_en') or 
                                           product.get('product_name', '')).lower()
 
-                            # Clean up the product name
-                            product_name = self.clean_product_name(product_name)
+                            # Check if it's a raw/fresh product
+                            categories = product.get('categories', '').lower()
+                            states = product.get('states', '').lower()
 
-                            if not product_name:
-                                continue
+                            if ('raw' in states or 'fresh' in categories) and product_name:
+                                # Clean the product name
+                                cleaned_name = self.clean_product_name(product_name)
 
-                            # Get environmental data
-                            ecoscore = product.get('ecoscore_grade')
-                            if ecoscore:
-                                emissions = self.estimate_emissions_from_ecoscore(ecoscore)
+                                if cleaned_name:  # Only process if we have a valid name
+                                    ecoscore = product.get('ecoscore_grade')
+                                    if ecoscore:
+                                        emissions = self.estimate_emissions_from_ecoscore(ecoscore)
 
-                                # Update emissions data with running average
-                                if product_name in emissions_data:
-                                    emissions_data[product_name] = (emissions_data[product_name] + emissions) / 2
-                                else:
-                                    emissions_data[product_name] = emissions
+                                        # Store or update emissions data
+                                        if cleaned_name in emissions_data:
+                                            emissions_data[cleaned_name] = (emissions_data[cleaned_name] + emissions) / 2
+                                        else:
+                                            emissions_data[cleaned_name] = emissions
 
-                            # Debug info
-                            if product_name and ecoscore:
-                                print(f"Found: {product_name} with ecoscore {ecoscore}")
+                                        print(f"Found: {cleaned_name} (ecoscore: {ecoscore})")
 
                 except requests.exceptions.RequestException as e:
-                    st.warning(f"Error fetching data for {category}: {str(e)}")
+                    print(f"Error fetching {search['category']}: {str(e)}")
                     continue
 
-            print(f"Total products found: {len(emissions_data)}")
+            # Also search specifically for common ingredients
+            common_ingredients = [
+                'potato', 'carrot', 'tomato', 'onion', 'rice',
+                'beans', 'peas', 'cucumber', 'lettuce', 'spinach'
+            ]
+
+            for ingredient in common_ingredients:
+                params = {
+                    'action': 'process',
+                    'search_terms': ingredient,
+                    'tagtype_0': 'states',
+                    'tag_contains_0': 'contains',
+                    'tag_0': 'en:raw',  # Only raw ingredients
+                    'json': 1,
+                    'page_size': 50,
+                    'fields': 'product_name,product_name_en,categories,ecoscore_grade,states'
+                }
+
+                try:
+                    response = requests.get(base_url, params=params, timeout=10)
+                    if response.status_code == 200:
+                        data = response.json()
+
+                        for product in data.get('products', []):
+                            product_name = (product.get('product_name_en') or 
+                                          product.get('product_name', '')).lower()
+
+                            if product_name:
+                                cleaned_name = self.clean_product_name(product_name)
+                                ecoscore = product.get('ecoscore_grade')
+
+                                if cleaned_name and ecoscore:
+                                    emissions = self.estimate_emissions_from_ecoscore(ecoscore)
+                                    if cleaned_name in emissions_data:
+                                        emissions_data[cleaned_name] = (emissions_data[cleaned_name] + emissions) / 2
+                                    else:
+                                        emissions_data[cleaned_name] = emissions
+
+                                    print(f"Found: {cleaned_name} (ecoscore: {ecoscore})")
+
+                except requests.exceptions.RequestException as e:
+                    print(f"Error fetching {ingredient}: {str(e)}")
+                    continue
+
+            print(f"\nTotal products found: {len(emissions_data)}")
+            print("Sample of database items:", list(emissions_data.items())[:5])
+
             return emissions_data
 
         except Exception as e:
-            st.error(f"Error fetching food emissions data: {str(e)}")
+            st.error(f"Error in get_food_emissions_database: {str(e)}")
             return {}
-
+    
     def clean_product_name(self, name):
-        """Clean up product names for consistency"""
+        """Clean product name focusing on raw ingredients"""
         if not name:
             return ""
 
         # Convert to lowercase and remove extra spaces
         name = name.lower().strip()
 
-        # Remove brand names and packaging info (common patterns)
-        remove_patterns = [
-            r'\b\d+\s*[gkm]?g\b',  # weights
-            r'\b\d+\s*pack\b',     # pack sizes
-            r'\b\d+\s*pieces?\b',  # piece counts
-            r'\(.*?\)',            # anything in parentheses
-            r'™',                  # trademark symbols
-            r'®',                  # registered trademark symbols
+        # Skip processed foods and snacks
+        skip_terms = ['chips', 'crisps', 'snack', 'pringles', 'processed', 
+                     'prepared', 'frozen', 'ready', 'instant', 'flavored']
+        for term in skip_terms:
+            if term in name:
+                return ""
+
+        # Basic cleaning
+        remove_words = [
+            'organic', 'bio', 'fresh', 'raw', 'whole', 'natural',
+            'premium', 'quality', 'grade', 'brand', 'packaged',
+            'washed', 'unwashed', 'clean', 'dirty', 'loose',
+            'selected', 'choice', 'finest'
         ]
 
+        name_parts = name.split()
+        name_parts = [word for word in name_parts if word not in remove_words]
+        name = ' '.join(name_parts)
+
+        # Remove measurements and other unnecessary information
         import re
-        for pattern in remove_patterns:
+        patterns = [
+            r'\d+[gkm]?g\b',
+            r'\d+\s*pack\b',
+            r'\d+\s*piece\w*\b',
+            r'\(.*?\)',
+            r'™',
+            r'®',
+        ]
+
+        for pattern in patterns:
             name = re.sub(pattern, '', name)
 
-        # Remove extra spaces and common filler words
-        name = ' '.join(word for word in name.split() 
-                       if word not in ['brand', 'fresh', 'frozen', 'organic'])
+        # Basic singularization
+        if name.endswith('oes'):
+            name = name[:-2]
+        elif name.endswith('s'):
+            name = name[:-1]
 
-        return name.strip()
+        return name.strip()    
 
     def estimate_emissions_from_ecoscore(self, ecoscore):
         """Estimate emissions based on ecoscore grade with more granular factors"""
@@ -260,14 +513,24 @@ class GreenLifeAssistant:
             # Initialize food emissions dictionary
             self.food_emissions = {}
 
-            # Try getting data from Open Food Facts
+            #  Load FAO data as primary source
+            print("Loading FAO emission data...")
+            fao_data = self.fao_manager.get_data()
+            if fao_data:
+                self.food_emissions.update(fao_data)
+                print(f"Loaded {len(fao_data)} items from FAO database")
+
+
+            # Try getting data from Open Food Facts as supplementary source
             print("Fetching data from Open Food Facts...")
             off_emissions = self.get_food_emissions_database()
             if off_emissions:
                 print(f"Found {len(off_emissions)} items from Open Food Facts")
-                self.food_emissions.update(off_emissions)
-            else:
-                print("No data retrieved from Open Food Facts")
+
+                # Merge with priority to FAO data
+                for food, emission in off_emissions.items():
+                    if food not in self.food_emissions:
+                        self.food_emissions[food] = emission
 
             # Add verified default values
             verified_emissions = {
