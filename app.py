@@ -274,6 +274,18 @@ class GreenLifeAssistant:
                 'beans': 2.0,     # kg CO2e per kg
                 'tofu': 2.0       # kg CO2e per kg
             }  
+
+            # Create variations of food names (singular/plural)
+            food_variations = {}
+            for food, emission in default_emissions.items():
+                food_variations[food.lower()] = emission
+                # Add singular version if plural
+                if food.endswith('s'):
+                    food_variations[food[:-1].lower()] = emission
+                # Add plural version if singular
+                else:
+                    food_variations[f"{food}s".lower()] = emission
+
             
             # Update with default values where missing
             for food, emission in default_emissions.items():
@@ -539,7 +551,17 @@ class GreenLifeAssistant:
                 unit, amount = self.parse_food_amount(amount_str)
                 if unit and amount:
                     grams = self.convert_to_grams(amount, unit, food.lower())
-                    emission_factor = self.food_emissions.get(food.lower())
+
+                    # Try different variations of the food name
+                    food_name = food.lower()
+                    food_singular = food_name[:-1] if food_name.endswith('s') else food_name
+                    food_plural = f"{food_name}s" if not food_name.endswith('s') else food_name
+
+                    emission_factor = (
+                        self.food_emissions.get(food_name) or 
+                        self.food_emissions.get(food_singular) or 
+                        self.food_emissions.get(food_plural)
+                    )
                     if emission_factor is None:
                         st.warning(f"No emission data found for {food}. Using default value.Using default value of 3.0 kg CO2e/kg. This is an estimate and actual emissions may vary.")
                         emission_factor = 3.0
