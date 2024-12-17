@@ -773,8 +773,7 @@ class GreenLifeAssistant:
                 'steaming': 0.17,
                 'boiling': 0.17,
                 'frying': 0.17,
-                'microwave': 0.08,
-                'raw': 0
+                'microwave': 0.08
             },
             'meat': {
                 'frying': 0.25,
@@ -974,7 +973,7 @@ class GreenLifeAssistant:
             cooking_method = st.selectbox(
                 "Cooking Method",
                 options=['frying', 'boiling', 'baking', 'microwave', 'steaming', 
-                        'grilling', 'pressure_cooking', 'simmering', 'raw'],
+                        'grilling', 'pressure_cooking', 'simmering'],
                 help="Select the primary cooking method"
             )
         with col2:
