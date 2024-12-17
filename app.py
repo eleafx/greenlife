@@ -832,6 +832,57 @@ class GreenLifeAssistant:
                 return method
         return 'frying'  # default method if none specified           
 
+
+    def analyze_ingredients_with_zeroshot(self, ingredient_text):   
+        """Use zero-shot classification to better understand ingredients and their context"""
+        try:
+        # Define relevant categories for classification
+            categories = [
+            "vegetable", "fruit", "meat", "dairy", "grain", 
+            "protein", "legume", "seasoning", "oil", "processed food"
+            ]
+
+        # Classify ingredient
+            result = self.classifier(
+            sequences=ingredient_text,
+            candidate_labels=categories,
+            hypothesis_template="This food item is a {}."
+            )
+
+            return {
+            'category': result['labels'][0],  # Best matching category
+            'confidence': result['scores'][0], # Confidence score
+            'all_categories': dict(zip(result['labels'], result['scores']))
+            }
+        except Exception as e:
+            st.error(f"Error in zero-shot classification: {str(e)}")
+            return None
+
+    def get_cooking_suggestions(self, ingredient_category):
+        """Get cooking suggestions based on ingredient category"""
+        suggestions = {
+            'vegetable': {
+            'methods': ['steaming', 'raw', 'microwave'],
+            'tips': ['Keep cooking time short to preserve nutrients']
+             },
+            'meat': {
+            'methods': ['grilling', 'pressure_cooking'],
+            'tips': ['Consider plant-based alternatives']
+            },
+            'grain': {
+            'methods': ['boiling', 'pressure_cooking'],
+            'tips': ['Try whole grain alternatives']
+             },
+            'legume': {
+            'methods': ['pressure_cooking', 'boiling'],
+            'tips': ['Soak beforehand to reduce cooking time']
+             }
+        }
+        return suggestions.get(ingredient_category, {
+        'methods': ['frying', 'boiling'],
+        'tips': ['Consider energy-efficient cooking methods']
+        })
+    
     def analyze_meal(self, meal_description, cooking_method=None, energy_source='electricity'):
         try:
             ingredients = [i.strip() for i in meal_description.split(',')]
@@ -914,13 +965,34 @@ class GreenLifeAssistant:
                         'cooking_method': cooking_method,
                         'cooking_time': cooking_time
                     })
+                # Add zero-shot classification
+                classification = self.analyze_ingredients_with_zeroshot(food)
+                if classification:
+                    category = classification['category']
+                    cooking_suggestions = self.get_cooking_suggestions(category)
+                
+                    # Update detailed_info with classification data
+                    detailed_info.append({
+                    'ingredient': food,
+                    'original_amount': f"{amount} {unit}",
+                    'grams': grams,
+                    'base_emission': base_emission,
+                    'cooking_emission': cooking_emission,
+                    'total_emission': total_emission,
+                    'cooking_method': cooking_method,
+                    'cooking_time': cooking_time,
+                    'category': category,
+                    'confidence': classification['confidence'],
+                    'suggested_methods': cooking_suggestions['methods'],
+                    'cooking_tips': cooking_suggestions['tips']
+                    })
 
             return {
-                'emissions': total_emissions,
-                'ingredients': identified_ingredients,
-                'detailed_info': detailed_info,
-                'cooking_method': cooking_method,
-                'energy_source': energy_source
+            'emissions': total_emissions,
+            'ingredients': identified_ingredients,
+            'detailed_info': detailed_info,
+            'cooking_method': cooking_method,
+            'energy_source': energy_source
             }
         
             
@@ -1540,21 +1612,26 @@ def main():
                     energy_source=energy_source
                 )
 
+                # In meal_analysis_page method
                 if analysis['ingredients']:
-                    # Display ingredients breakdown
                     st.subheader("Detected Ingredients:")
-                    total_emissions = 0
-
                     for info in analysis['detailed_info']:
                         with st.expander(f"{info['ingredient'].title()}"):
                             col1, col2 = st.columns(2)
                             with col1:
                                 st.write(f"Amount: {info['original_amount']}")
                                 st.write(f"Weight: {info['grams']}g")
+                                st.write(f"Category: {info['category']} ({info['confidence']:.2f})")
                             with col2:
                                 st.write(f"Base Emissions: {info['base_emission']:.2f} kg CO2e")
                                 st.write(f"Cooking Emissions: {info['cooking_emission']:.2f} kg CO2e")
                                 st.write(f"Total: {info['total_emission']:.2f} kg CO2e")
+            
+                            # Show suggestions
+                            st.subheader("Cooking Suggestions")
+                            st.write("Recommended methods:", ", ".join(info['suggested_methods']))
+                            for tip in info['cooking_tips']:
+                                st.write(f"💡 {tip}")
 
                         
                     if st.button("Track This Meal"):
