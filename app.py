@@ -757,7 +757,6 @@ class GreenLifeAssistant:
             'slow_cooking': 0.15,  # Slow cooker
             'grilling': 0.68,     # Electric grill
             'steaming': 0.30,     # Electric steamer
-            'raw': 0.0            # No cooking needed
         }
 
         # Average cooking times in hours
@@ -825,8 +824,7 @@ class GreenLifeAssistant:
             'steam': 'steaming',
             'grill': 'grilling',
             'grilled': 'grilling',
-            'pressure cook': 'pressure_cooking',
-            'raw': 'raw'
+            'pressure cook': 'pressure_cooking'
         }
 
         description = description.lower()
