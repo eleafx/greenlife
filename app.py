@@ -885,122 +885,91 @@ class GreenLifeAssistant:
     
     def analyze_meal(self, meal_description, cooking_method=None, energy_source='electricity'):
         try:
-            ingredients = [i.strip() for i in meal_description.split(',')]
+           ingredients = [i.strip() for i in meal_description.split(',')]
+           total_emissions = 0
+           identified_ingredients = []
+           detailed_info = []
 
-            # If cooking method not specified, try to parse from description
-            if not cooking_method:
-                cooking_method = self.parse_cooking_method(meal_description)
-
-            total_emissions = 0
-            identified_ingredients = []
-            detailed_info = []
-
-            for ingredient in ingredients:
-                # Improved parsing
-                ingredient = ingredient.strip()
-                # Match pattern like "2 cups rice" or "300g chicken"
-                parts = ingredient.split()
-
-                if len(parts) >= 2:
-                    # Try to find the unit in the ingredient string
-                    amount_str = parts[0]  # First part is the amount
-
-                    # Check if the second part is a unit
-                    possible_units = ['cup', 'cups', 'tbsp', 'tsp', 'tablespoon', 'teaspoon', 
-                                    'piece', 'pieces', 'g', 'gram', 'grams', 'kg', 'kilogram', 
-                                    'serving', 'servings', 'oz', 'ounce', 'lb', 'pound']
-
-                    if parts[1].lower() in possible_units:
-                        # Unit is present, food name starts after unit
-                        food = ' '.join(parts[2:])
-                        amount_str = f"{parts[0]} {parts[1]}"
-                    else:
-                        # No unit present, assume pieces
-                        food = ' '.join(parts[1:])
-                        amount_str = f"{parts[0]} piece"
-                else:
-                    # Default to 1 piece if no amount specified
-                    amount_str, food = '1 piece', ingredient
-
-                # Get base ingredient emissions
+           for ingredient in ingredients:
+            # Existing parsing code for amount and unit
+            parts = ingredient.split()
+            if len(parts) >= 2:
+                amount_str = parts[0]
+                food = ' '.join(parts[1:])
                 unit, amount = self.parse_food_amount(amount_str)
-                if unit and amount:
-                    grams = self.convert_to_grams(amount, unit, food.lower())
+            else:
+                unit, amount = 'piece', 1
+                food = ingredient
 
-                    # Try different variations of the food name
-                    food_name = food.lower()
-                    food_singular = food_name[:-1] if food_name.endswith('s') else food_name
-                    food_plural = f"{food_name}s" if not food_name.endswith('s') else food_name
+            # Get ingredient classification
+            classification = self.analyze_ingredients_with_zeroshot(food)
+            
+            # Convert to grams
+            grams = self.convert_to_grams(amount, unit, food.lower())
+            
+            # Calculate emissions
+            emission_factor = self.food_emissions.get(food.lower(), 3.0)  # default value if not found
+            base_emission = (grams / 1000) * emission_factor
+            
+            # Calculate cooking emissions
+            food_type = self.get_food_type(food.lower())
+            cooking_time = self.cooking_times.get(food_type, self.cooking_times['default']).get(cooking_method, 0.25)
+            cooking_emission = self.cooking_emissions.get(cooking_method, 0) * cooking_time
+            
+            # Apply energy source factor
+            cooking_emission *= self.energy_source_factors.get(energy_source, 1.0)
+            
+            total_emission = base_emission + cooking_emission
+            total_emissions += total_emission
+            
+            # Get cooking suggestions
+            cooking_suggestions = self.get_cooking_suggestions(
+                classification['category'] if classification else 'default'
+            )
 
-                    emission_factor = (
-                        self.food_emissions.get(food_name) or 
-                        self.food_emissions.get(food_singular) or 
-                        self.food_emissions.get(food_plural)
-                    )
-                    if emission_factor is None:
-                        st.warning(f"No emission data found for {food}. Using default value of 3.0 kg CO2e/kg. This is an estimate and actual emissions may vary.")
-                        emission_factor = 3.0
-                    base_emission = (grams / 1000) * emission_factor
+            # Create detailed info dictionary
+            ingredient_info = {
+                'ingredient': food,
+                'original_amount': f"{amount} {unit}",
+                'grams': grams,
+                'base_emission': base_emission,
+                'cooking_emission': cooking_emission,
+                'total_emission': total_emission,
+                'cooking_method': cooking_method,
+                'cooking_time': cooking_time
+            }
 
-                    # Calculate cooking emissions
-                    food_type = self.get_food_type(food.lower())
-                    cooking_time = self.cooking_times.get(food_type, self.cooking_times['default']).get(cooking_method, 0.25)
-                    cooking_emission = self.cooking_emissions.get(cooking_method, 0) * cooking_time
-
-                    # Apply energy source factor
-                    cooking_emission *= self.energy_source_factors.get(energy_source, 1.0)
-
-                    total_emission = base_emission + cooking_emission
-
-                    identified_ingredients.append((food, total_emission))
-                    total_emissions += total_emission
-
-                    detailed_info.append({
-                        'ingredient': food,
-                        'original_amount': f"{amount} {unit}",
-                        'grams': grams,
-                        'base_emission': base_emission,
-                        'cooking_emission': cooking_emission,
-                        'total_emission': total_emission,
-                        'cooking_method': cooking_method,
-                        'cooking_time': cooking_time
-                    })
-                # Add zero-shot classification
-                classification = self.analyze_ingredients_with_zeroshot(food)
-                if classification:
-                    category = classification['category']
-                    cooking_suggestions = self.get_cooking_suggestions(category)
-                
-                    # Update detailed_info with classification data
-                    detailed_info.append({
-                    'ingredient': food,
-                    'original_amount': f"{amount} {unit}",
-                    'grams': grams,
-                    'base_emission': base_emission,
-                    'cooking_emission': cooking_emission,
-                    'total_emission': total_emission,
-                    'cooking_method': cooking_method,
-                    'cooking_time': cooking_time,
-                    'category': category,
+            # Add classification data if available
+            if classification:
+                ingredient_info.update({
+                    'category': classification['category'],
                     'confidence': classification['confidence'],
                     'suggested_methods': cooking_suggestions['methods'],
                     'cooking_tips': cooking_suggestions['tips']
-                    })
+                })
+            else:
+                ingredient_info.update({
+                    'category': 'unknown',
+                    'confidence': 0.0,
+                    'suggested_methods': [],
+                    'cooking_tips': []
+                })
 
-            return {
+            detailed_info.append(ingredient_info)
+            identified_ingredients.append((food, total_emission))
+
+           return {
             'emissions': total_emissions,
             'ingredients': identified_ingredients,
             'detailed_info': detailed_info,
             'cooking_method': cooking_method,
             'energy_source': energy_source
-            }
-        
-            
+        }
 
         except Exception as e:
-            st.error(f"Error analyzing meal: {str(e)}")
-            return {'emissions': 0, 'ingredients': [], 'detailed_info': []}
-
+          st.error(f"Error analyzing meal: {str(e)}")
+          return {'emissions': 0, 'ingredients': [], 'detailed_info': []}
+      
     def validate_input(self, meal_description, cooking_method, energy_source):
         """Validate user input"""
         if not meal_description or not meal_description.strip():
@@ -1619,55 +1588,22 @@ def main():
                         with st.expander(f"{info['ingredient'].title()}"):
                             col1, col2 = st.columns(2)
                             with col1:
-                                st.write(f"Amount: {info['original_amount']}")
-                                st.write(f"Weight: {info['grams']}g")
-                                st.write(f"Category: {info['category']} ({info['confidence']:.2f})")
-                            with col2:
-                                st.write(f"Base Emissions: {info['base_emission']:.2f} kg CO2e")
-                                st.write(f"Cooking Emissions: {info['cooking_emission']:.2f} kg CO2e")
-                                st.write(f"Total: {info['total_emission']:.2f} kg CO2e")
+                               st.write(f"Amount: {info['original_amount']}")
+                               st.write(f"Weight: {info['grams']}g")
+                            if 'category' in info:  
+                               st.write(f"Category: {info['category']} ({info['confidence']:.2f})")
+                        with col2:
+                               st.write(f"Base Emissions: {info['base_emission']:.2f} kg CO2e")
+                               st.write(f"Cooking Emissions: {info['cooking_emission']:.2f} kg CO2e")
+                               st.write(f"Total: {info['total_emission']:.2f} kg CO2e")
             
-                            # Show suggestions
+                        # Show suggestions if available
+                        if info.get('suggested_methods') or info.get('cooking_tips'):
                             st.subheader("Cooking Suggestions")
-                            st.write("Recommended methods:", ", ".join(info['suggested_methods']))
-                            for tip in info['cooking_tips']:
-                                st.write(f"💡 {tip}")
-
-                        
-                    if st.button("Track This Meal"):
-                        # Store meal activity data
-                        new_activity = {
-                            'date': datetime.now(),
-                            'type': 'meal',
-                            'description': meal_description,
-                            'cooking_method': cooking_method,
-                            'energy_source': energy_source,
-                            'emissions': analysis['emissions'],
-                            'ingredients': [(info['ingredient'], info['total_emission']) for info in analysis['detailed_info']], 
-                            'detailed_info': analysis['detailed_info']
-                        }
-                        st.session_state.activities.append(new_activity)
-                        st.session_state.total_emissions += analysis['emissions']
-
-                        # Display results
-                        st.success(f"Meal tracked! Total emissions: {analysis['emissions']:.2f} kg CO2e")
-
-                        # Create emissions visualization
-                        ingredients_df = pd.DataFrame(
-                            [(info['ingredient'], info['total_emission']) for info in analysis['detailed_info']], # Changed from 'emission' to 'total_emission'
-                            columns=['Ingredient', 'Emissions']
-                        )
-
-                        fig = px.pie(
-                            ingredients_df,
-                            values='Emissions',
-                            names='Ingredient',
-                            title='Emissions Distribution by Ingredient'
-                        )
-                        st.plotly_chart(fig)
-
-                else:
-                    st.warning("No ingredients detected. Please try rephrasing your meal description.")
+                            if info.get('suggested_methods'):
+                               st.write("Recommended methods:", ", ".join(info['suggested_methods']))
+                            for tip in info.get('cooking_tips', []):
+                               st.write(f"💡 {tip}")
             else:
                 st.info("Please describe your meal to analyze its environmental impact.")
     elif page == "Meal Analysis":
