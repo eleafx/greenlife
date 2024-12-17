@@ -1604,8 +1604,44 @@ def main():
                                st.write("Recommended methods:", ", ".join(info['suggested_methods']))
                             for tip in info.get('cooking_tips', []):
                                st.write(f"💡 {tip}")
-            else:
-                st.info("Please describe your meal to analyze its environmental impact.")
+                               
+                    # Add total emissions display
+                    st.metric(
+                       "Total Meal Emissions", 
+                       f"{analysis['emissions']:.2f} kg CO2e",
+                       help="Total carbon dioxide equivalent emissions for this meal"
+                    )    
+                    # Add track button
+                    if st.button("Track This Meal"):
+                      new_activity = {
+                      'date': datetime.now(),
+                      'type': 'meal',
+                      'description': meal_description,
+                      'cooking_method': cooking_method,
+                      'energy_source': energy_source,
+                      'emissions': analysis['emissions'],
+                      'ingredients': analysis['ingredients'],
+                      'detailed_info': analysis['detailed_info']
+                      }
+                      st.session_state.activities.append(new_activity)
+                      st.session_state.total_emissions += analysis['emissions']
+                      st.success(f"Meal tracked! Total emissions: {analysis['emissions']:.2f} kg CO2e")
+                    # Create emissions chart
+                    emissions_data = pd.DataFrame(
+                      analysis['ingredients'],
+                      columns=['Ingredient', 'Emissions']
+                    )
+
+                    fig = px.pie(
+                        emissions_data, 
+                        values='Emissions', 
+                        names='Ingredient',
+                        title='Emissions Distribution by Ingredient'
+                    )
+                    st.plotly_chart(fig)           
+                else:
+                    st.info("Please describe your meal to analyze its environmental impact.")
+                    
     elif page == "Meal Analysis":
         app.meal_analysis_page()
     
